@@ -17,3 +17,7 @@ How does copy on write work?
 
   This is a form of lazy allocation, deferring memory allocation until
   the new memory is actually used.
+
+
+Quote from https://landley.net/writing/memory-faq.txt
+
