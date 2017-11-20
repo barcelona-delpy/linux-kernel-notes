@@ -1,0 +1,54 @@
+The Linux scheduler is modular, enabling different algorithms to schedule different types
+of processes.This modularity is called scheduler classes. Scheduler classes enable different,
+pluggable algorithms to coexist, scheduling their own types of processes. Each scheduler
+class has a priority.The base scheduler code, which is defined in kernel/sched.c, iterates
+over each scheduler class in order of priority.The highest priority scheduler class that has
+a runnable process wins, selecting who runs next.
+
+
+kernel/sched.c
+
+/*
+ * Pick up the highest-prio task:
+ */
+static inline struct task_struct *
+pick_next_task(struct rq *rq)
+{
+	const struct sched_class *class;
+	struct task_struct *p;
+
+	/*
+	 * Optimization: we know that if all tasks are in
+	 * the fair class we can call that function directly:
+	 */
+	if (likely(rq->nr_running == rq->cfs.nr_running))
+	{
+		p = fair_sched_class.pick_next_task(rq);
+		if (likely(p))
+			return p;
+	}
+  
+  /*iter over all schedular class */
+	for_each_class(class)
+	{
+		p = class->pick_next_task(rq);
+		if (p)
+			return p;
+	}
+
+	BUG(); /* the idle class will always have a runnable task */
+}
+
+schedular class priority(in descend order):
+stop_sched_class->rt_sched_class->fair_sched_class->idle_sched_class
+
+each class use pick_next_task determine the next running process.
+
+
+
+
+
+
+
+
+
