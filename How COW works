@@ -1,0 +1,19 @@
+
+How does copy on write work?
+
+  If two page table entries point to the same physical page, the contents
+  of that page show up in both locations when read.  A reference counter
+  associated with the page tracks how many page table entries point to that
+  page.  Each of those page table entries has read permission (but not
+  write permissions) for the page.
+
+  Attemps to write to the page generate a page fault.  The page fault handler
+  allocates a new physical page, copies the contents of the shared page into
+  the new page, attaches the new page to the faulting page table entry, sets
+  the updated PTE writeable, decrements the count on the old shared page
+  (possibly removing its shared status if the reference count falls to 1),
+  and resumes the faulting process allowing the write to go through to the
+  new nonshared copy of the page.
+
+  This is a form of lazy allocation, deferring memory allocation until
+  the new memory is actually used.
