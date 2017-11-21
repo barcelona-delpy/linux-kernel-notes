@@ -1,0 +1,238 @@
+通过文件进行进程间通信   效率低下   因为要访问磁盘
+a crude form of synchronization among User Mode processes can be achieved by creating a (possibly empty) file and by making use of
+suitable VFS system calls to lock and unlock it. Similarly, data sharing among processes can be obtained by storing data in temporary 
+files protected by locks. This approach is costly since it requires accesses to the disk filesystem.
+
+
+
+Pipes and FIFOs (named pipes)
+Best suited to implement producer/consumer interactions among processes. Some processes fill the pipe with data while 
+others extract data from the pipe.
+
+Semaphores
+useage:??????
+
+Messages
+Allow processes to exchange messages (short blocks of data) in an asynchronous way.
+They can be thought of as signals carrying additional information.
+
+Shared memory regions
+Best suited to implement interaction schemes in which processes must share large
+amounts of data in an efficient way. 
+
+
+
+kernel version:2.6.11
+
+共享内存:
+struct shmid_kernel /* private to the kernel */
+{	
+	struct kern_ipc_perm	shm_perm;
+	struct file *		shm_file;     /*这个指针是关键*/
+	int			id;
+	unsigned long		shm_nattch;
+	unsigned long		shm_segsz;
+	time_t			shm_atim;
+	time_t			shm_dtim;
+	time_t			shm_ctim;
+	pid_t			shm_cprid;
+	pid_t			shm_lprid;
+	struct user_struct	*mlock_user;
+};
+
+通过shmem_file_setup获取文件指针    文件名是sprintf (name, "SYSV%08x", key);
+/*
+ * shmem_file_setup - get an unlinked file living in tmpfs
+ *
+ * @name: name for dentry (to be seen in /proc/<pid>/maps
+ * @size: size to be set for the file
+ *
+ */
+tmpfs
+
+static int newseg (key_t key, int shmflg, size_t size)
+{
+	int error;
+	struct shmid_kernel *shp;
+	int numpages = (size + PAGE_SIZE -1) >> PAGE_SHIFT;
+	struct file * file;
+	char name[13];
+	int id;
+
+	if (size < SHMMIN || size > shm_ctlmax)
+		return -EINVAL;
+
+	if (shm_tot + numpages >= shm_ctlall)
+		return -ENOSPC;
+
+	shp = ipc_rcu_alloc(sizeof(*shp));
+	if (!shp)
+		return -ENOMEM;
+
+	shp->shm_perm.key = key;
+	shp->shm_flags = (shmflg & S_IRWXUGO);
+	shp->mlock_user = NULL;
+
+	shp->shm_perm.security = NULL;
+	error = security_shm_alloc(shp);
+	if (error) {
+		ipc_rcu_putref(shp);
+		return error;
+	}
+
+	if (shmflg & SHM_HUGETLB)
+	{
+		/* hugetlb_zero_setup takes care of mlock user accounting */
+		file = hugetlb_zero_setup(size);
+		shp->mlock_user = current->user;
+	}
+	else
+	{
+		sprintf (name, "SYSV%08x", key);
+		file = shmem_file_setup(name, size, VM_ACCOUNT);
+	}
+	
+	error = PTR_ERR(file);
+	if (IS_ERR(file))
+		goto no_file;
+
+	error = -ENOSPC;
+	id = shm_addid(shp);
+	if(id == -1) 
+		goto no_id;
+
+	shp->shm_cprid = current->tgid;
+	shp->shm_lprid = 0;
+	shp->shm_atim = shp->shm_dtim = 0;
+	shp->shm_ctim = get_seconds();
+	shp->shm_segsz = size;
+	shp->shm_nattch = 0;
+	shp->id = shm_buildid(id,shp->shm_perm.seq);
+	shp->shm_file = file;
+  
+  /*i节点号就是shm id*/
+	file->f_dentry->d_inode->i_ino = shp->id;
+	if (shmflg & SHM_HUGETLB)
+		set_file_hugepages(file);
+	else
+		file->f_op = &shm_file_operations;
+	shm_tot += numpages;
+	shm_unlock(shp);
+	return shp->id;
+
+no_id:
+	fput(file);
+no_file:
+	security_shm_free(shp);
+	ipc_rcu_putref(shp);
+	return error;
+}
+
+
+
+
+
+struct file *shmem_file_setup(char *name, loff_t size, unsigned long flags)
+{
+	int error;
+	struct file *file;
+	struct inode *inode;
+	struct dentry *dentry, *root;
+	struct qstr this;
+
+	if (IS_ERR(shm_mnt))
+		return (void *)shm_mnt;
+
+	if (size < 0 || size > SHMEM_MAX_BYTES)
+		return ERR_PTR(-EINVAL);
+
+	if (shmem_acct_size(flags, size))
+		return ERR_PTR(-ENOMEM);
+
+	error = -ENOMEM;
+	this.name = name;
+	this.len = strlen(name);
+	this.hash = 0; /* will go */
+	root = shm_mnt->mnt_root;
+
+	/*没啥特别的       op是null   */
+	dentry = d_alloc(root, &this);
+	if (!dentry)
+		goto put_memory;
+
+	error = -ENFILE;
+
+	/*获取一个文件描述符           也没啥特别的*/
+	file = get_empty_filp();
+	if (!file)
+		goto put_dentry;
+
+	error = -ENOSPC;
+  
+  /*
+      关键点   inode的ops和inodefile的ops
+		  inode->i_mapping->a_ops = &shmem_aops;
+		  inode->i_mapping->backing_dev_info = &shmem_backing_dev_info;
+      
+  		inode->i_op = &shmem_inode_operations;
+			inode->i_fop = &shmem_file_operations;
+  */
+	inode = shmem_get_inode(root->d_sb, S_IFREG | S_IRWXUGO, 0);
+	if (!inode)
+		goto close_file;
+
+	SHMEM_I(inode)->flags = flags & VM_ACCOUNT;
+	d_instantiate(dentry, inode);
+	inode->i_size = size;
+	inode->i_nlink = 0;	/* It is unlinked */
+	file->f_vfsmnt = mntget(shm_mnt);
+	file->f_dentry = dentry;
+	file->f_mapping = inode->i_mapping;
+	file->f_op = &shmem_file_operations;
+	file->f_mode = FMODE_WRITE | FMODE_READ;
+	return file;
+
+close_file:
+	put_filp(file);
+put_dentry:
+	dput(dentry);
+put_memory:
+	shmem_unacct_size(flags, size);
+	return ERR_PTR(error);
+}
+
+/*以上各种操作设置file ops inode ops    */
+
+unsigned long do_mmap_pgoff(struct file * file, unsigned long addr,
+			unsigned long len, unsigned long prot,
+			unsigned long flags, unsigned long pgoff)
+{
+  .......
+  
+  
+		vma->vm_file = file;
+		get_file(file);
+		error = file->f_op->mmap(file, vma);
+    
+ ........
+}
+
+
+static int shmem_mmap(struct file *file, struct vm_area_struct *vma)
+{
+	file_accessed(file);
+	vma->vm_ops = &shmem_vm_ops;
+	return 0;
+}
+
+
+      
+
+
+
+
+
+
+
+
+
