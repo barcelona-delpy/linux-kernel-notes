@@ -1,4 +1,3 @@
-通过文件进行进程间通信   效率低下   因为要访问磁盘
 a crude form of synchronization among User Mode processes can be achieved by creating a (possibly empty) file and by making use of
 suitable VFS system calls to lock and unlock it. Similarly, data sharing among processes can be obtained by storing data in temporary 
 files protected by locks. This approach is costly since it requires accesses to the disk filesystem.
